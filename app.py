@@ -19,7 +19,7 @@ try:
         host="localhost",
         user="root",
         password="",  # Ganti kalau ada password
-        database="sensor"
+        database="sensor.sql"
     )
     cursor = db.cursor()
 except:
