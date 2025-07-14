@@ -1,56 +1,83 @@
 import streamlit as st
-import numpy as np
 import pandas as pd
+import mysql.connector
 import joblib
 
-# Load model
+# Load model & tools
 model = joblib.load('model/random_forest_genset.pkl')
 scaler = joblib.load('scaler.pkl')
 le = joblib.load('label_encoder.pkl')
 
-# UI
+# Streamlit UI
 st.set_page_config(page_title="Prediksi Status Genset", layout="centered")
-st.title("⚡ Prediksi Status Genset")
-st.markdown("Masukkan nilai sensor untuk mengetahui kondisi genset (Normal, Anomaly, Failure)")
+st.title("⚡ Prediksi Status Genset Otomatis dari Database")
+st.markdown("Ambil data sensor terbaru dari database dan prediksi status genset (Normal, Anomaly, Failure).")
 
-with st.form("input_form"):
-    col1, col2 = st.columns(2)
+# Koneksi ke database
+try:
+    db = mysql.connector.connect(
+        host="localhost",
+        user="root",
+        password="",  # Ganti kalau ada password
+        database="genset"
+    )
+    cursor = db.cursor()
+except:
+    st.error("❌ Gagal konek ke database.")
+    st.stop()
 
-    with col1:
-        oilPressure = st.number_input("Oil Pressure", 0.0, 10.0, 3.5)
-        coolantTemperature = st.number_input("Coolant Temperature (°C)", 0.0, 120.0, 30.0)
-        engineRPM = st.number_input("Engine RPM", 0, 3000, 1500)
-        engineVibration = st.number_input("Engine Vibration", 0, 200, 50)
-        batteryVoltageDC = st.number_input("Battery Voltage DC", 0.0, 24.0, 13.0)
+# Ambil 1 data sensor terbaru
+cursor.execute("""
+SELECT oil_pressure, coolant_temp, engine_RPM, vibration,
+       baterei, genset_voltage, genset_current,
+       genset_frekuensi, genset_power
+FROM sensor
+ORDER BY timestamp DESC
+LIMIT 1
+""")
+row = cursor.fetchone()
 
-    with col2:
-        gensetVoltageAC = st.number_input("Genset Voltage AC", 0.0, 300.0, 230.0)
-        gensetCurrentAC = st.number_input("Genset Current AC", 0.0, 50.0, 15.0)
-        gensetFrequencyAC = st.number_input("Genset Frequency AC", 0.0, 60.0, 50.0)
-        gensetPowerAC = st.number_input("Genset Power AC (W)", 0.0, 20000.0, 12000.0)
+if row:
+    # Label kolom untuk model
+    columns = ['oilPressure', 'coolantTemperature', 'engineRPM', 'engineVibration',
+               'batteryVoltageDC', 'gensetVoltageAC', 'gensetCurrentAC',
+               'gensetFrequencyAC', 'gensetPowerAC']
 
-    submitted = st.form_submit_button("Prediksi")
+    df_input = pd.DataFrame([row], columns=columns)
+    st.subheader("📥 Data Sensor Terbaru")
+    st.dataframe(df_input)
 
-# Proses prediksi
-if submitted:
-    input_data = pd.DataFrame([{
-        'oilPressure': oilPressure,
-        'coolantTemperature': coolantTemperature,
-        'engineRPM': engineRPM,
-        'engineVibration': engineVibration,
-        'batteryVoltageDC': batteryVoltageDC,
-        'gensetVoltageAC': gensetVoltageAC,
-        'gensetCurrentAC': gensetCurrentAC,
-        'gensetFrequencyAC': gensetFrequencyAC,
-        'gensetPowerAC': gensetPowerAC
-    }])
+    # Prediksi
+    input_scaled = scaler.transform(df_input)
+    pred = model.predict(input_scaled)[0]
+    label = le.inverse_transform([pred])[0]
 
-    input_scaled = scaler.transform(input_data)
-    prediction = model.predict(input_scaled)[0]
-    label = le.inverse_transform([prediction])[0]
+    st.success(f"✅ Prediksi Status Genset: **{label}**")
 
-    st.success(f"✅ Status Genset: **{label}**")
+    # Simpan hasil prediksi ke tabel sensor_prediksi
+    insert_query = """
+    INSERT INTO sensor_prediksi (
+        oilPressure, coolantTemperature, engineRPM, engineVibration,
+        batteryVoltageDC, gensetVoltageAC, gensetCurrentAC,
+        gensetFrequencyAC, gensetPowerAC, status_prediksi
+    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+    """
+    cursor.execute(insert_query, tuple(row) + (label,))
+    db.commit()
+
+    st.info("📝 Hasil prediksi telah disimpan ke tabel `sensor_prediksi`.")
+
+    # Menampilkan riwayat prediksi
+    cursor.execute("SELECT * FROM sensor_prediksi ORDER BY waktu DESC LIMIT 5")
+    result = cursor.fetchall()
+    columns_display = [i[0] for i in cursor.description]
+    df_history = pd.DataFrame(result, columns=columns_display)
 
     st.markdown("---")
-    st.subheader("📈 Data yang Dimasukkan")
-    st.dataframe(input_data)
+    st.subheader("🕓 Riwayat Prediksi")
+    st.dataframe(df_history)
+else:
+    st.warning("⚠️ Tidak ada data sensor di database.")
+
+cursor.close()
+db.close()
